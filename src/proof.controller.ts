@@ -1,85 +1,67 @@
 // src/proof.controller.ts
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
   Post,
-  Query,
-  BadRequestException,
+  Req,
+  UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
+
 import { AgeProofService } from './age-proof.service';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
 
 @Controller('proof')
 export class ProofController {
   constructor(private readonly ageProofService: AgeProofService) {}
 
   /**
-   * GET /proof/status?wallet_pubkey=...
-   *
-   * Retourne le statut de la preuve AGE_18_PLUS pour ce wallet :
-   * {
-   *   wallet_pubkey: string;
-   *   has_proof: boolean;
-   *   is_major: boolean;
-   *   revoked: boolean;
-   *   valid_from: number | null;
-   *   valid_until: number | null;
-   *   deploy_hash: string | null;
-   * }
-   *
-   * Remarque : aucune date de naissance ni information sensible
-   * n’est renvoyée ici, seulement un statut agrégé.
+   * GET /proof/status
+   * Protégé par JWT:
+   * - Authorization: Bearer <token>
+   * Le wallet_pubkey provient du token (req.user.wallet_pubkey).
    */
+  @UseGuards(JwtAuthGuard)
   @Get('status')
-  async getStatus(@Query('wallet_pubkey') walletPubkey: string) {
-    if (!walletPubkey || !walletPubkey.trim()) {
-      throw new BadRequestException('wallet_pubkey est requis');
+  async getStatus(@Req() req: Request & { user?: any }) {
+    const tokenWallet = (req.user?.wallet_pubkey || '').trim();
+    if (!tokenWallet) {
+      throw new UnauthorizedException('Invalid token payload (missing wallet_pubkey)');
     }
 
-    return this.ageProofService.getAge18PlusStatus(walletPubkey.trim());
+    return this.ageProofService.getAge18PlusStatus(tokenWallet);
   }
 
   /**
    * POST /proof/revoke
+   * Protégé par JWT:
+   * - Authorization: Bearer <token>
+   * - Pour éviter toute ambiguïté: on révoque le wallet du token (pas celui du body).
    *
-   * Body JSON:
-   * {
-   *   "wallet_pubkey": "01abc...",
-   *   "claim_type": "AGE_18_PLUS"   // optionnel, par défaut AGE_18_PLUS
-   * }
-   *
-   * Révoque la dernière preuve AGE_18_PLUS active pour ce wallet
-   * (appel du contrat Casper + mise à jour en base).
-   *
-   * La réponse suit la forme :
-   * {
-   *   wallet_pubkey: string;
-   *   claim_type: string;
-   *   had_proof: boolean;
-   *   revoked: boolean;
-   *   deploy_hash: string | null;
-   *   valid_from: number | null;
-   *   valid_until: number | null;
-   * }
-   *
-   * Aucun détail de DOB n’est exposé.
+   * Body optionnel:
+   * { "claim_type": "AGE_18_PLUS" }  (par défaut AGE_18_PLUS)
    */
+  @UseGuards(JwtAuthGuard)
   @Post('revoke')
   async revokeProof(
-    @Body('wallet_pubkey') walletPubkey: string,
+    @Req() req: Request & { user?: any },
     @Body('claim_type') claimType?: string,
+    @Body('wallet_pubkey') walletPubkeyIgnored?: string, // ignoré volontairement
   ) {
-    if (!walletPubkey || !walletPubkey.trim()) {
-      throw new BadRequestException('wallet_pubkey est requis');
+    const tokenWallet = (req.user?.wallet_pubkey || '').trim();
+    if (!tokenWallet) {
+      throw new UnauthorizedException('Invalid token payload (missing wallet_pubkey)');
     }
 
     const ct = (claimType ?? 'AGE_18_PLUS').trim();
     if (ct !== 'AGE_18_PLUS') {
-      throw new BadRequestException(
-        `claim_type non supporté pour l’instant: ${ct}`,
-      );
+      throw new BadRequestException(`claim_type non supporté pour l’instant: ${ct}`);
     }
 
-    return this.ageProofService.revokeAge18PlusClaim(walletPubkey.trim());
+    // On révoque uniquement la preuve du wallet authentifié
+    return this.ageProofService.revokeAge18PlusClaim(tokenWallet);
   }
 }

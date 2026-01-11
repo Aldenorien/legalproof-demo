@@ -9,6 +9,7 @@ import { DbService } from './db.service';
 import { SessionEntity } from './entities/session.entity';
 import { LogEntity } from './entities/log.entity';
 import { AgeProofEntity } from './entities/age-proof.entity';
+import { CasperSubmissionEntity } from './entities/casper-submission.entity';
 
 import { OnboardingController } from './onboarding.controller';
 import { OnboardingService } from './onboarding.service';
@@ -16,6 +17,11 @@ import { OnboardingService } from './onboarding.service';
 import { AgeProofService } from './age-proof.service';
 import { ProofController } from './proof.controller';
 import { ApiVerifyController } from './api-verify.controller';
+import { AuthModule } from './auth/auth.module';
+import { CasperController } from './casper.controller';
+import { AdminController } from './admin.controller';
+import { AdminEnvController } from './admin-env.controller';
+
 
 @Module({
   imports: [
@@ -34,21 +40,31 @@ import { ApiVerifyController } from './api-verify.controller';
         username: process.env.DB_USER,
         password: process.env.DB_PASSWORD,
         database: process.env.DB_NAME,
-        entities: [SessionEntity, LogEntity, AgeProofEntity],
+
+        // IMPORTANT: ajouter CasperSubmissionEntity ici
+        entities: [SessionEntity, LogEntity, AgeProofEntity, CasperSubmissionEntity],
+
         synchronize: false, // on NE laisse PAS TypeORM modifier le schéma
         migrationsRun: false,
       }),
     }),
 
     // Repositories injectables
-    TypeOrmModule.forFeature([SessionEntity, LogEntity, AgeProofEntity]),
+    // IMPORTANT: ajouter CasperSubmissionEntity ici aussi
+    TypeOrmModule.forFeature([SessionEntity, LogEntity, AgeProofEntity, CasperSubmissionEntity]),
+
+    AuthModule,
   ],
   controllers: [
-    AppController,
-    OnboardingController,
-    ProofController,
-    ApiVerifyController, // <-- ajout ici
-  ],
+  AppController,
+  OnboardingController,
+  ProofController,
+  ApiVerifyController,
+  CasperController,
+  AdminController,
+  AdminEnvController,
+],
+
   providers: [AppService, DbService, OnboardingService, AgeProofService],
 })
 export class AppModule {}

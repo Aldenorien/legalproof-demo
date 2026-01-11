@@ -7,8 +7,15 @@ import {
   Post,
   Query,
   BadRequestException,
+  Res,
+  Req,
+  UseGuards,
+  UnauthorizedException,
 } from '@nestjs/common';
+import type { Response, Request } from 'express';
+
 import { OnboardingService } from './onboarding.service';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
 
 @Controller('onboarding')
 export class OnboardingController {
@@ -17,32 +24,35 @@ export class OnboardingController {
   /**
    * POST /onboarding/init
    *
+   * Protégé par JWT:
+   * - Authorization: Bearer <token>
+   *
    * Body:
    * {
-   *   "wallet_pubkey": "01e4ef..."
+   *   "redirect_url": "https://legalproof.safoutan.com/verify" (optionnel)
    * }
    *
-   * Réponse:
-   * {
-   *   "sessionId": "..."
-   * }
+   * Le wallet_pubkey vient du token (req.user.wallet_pubkey).
    */
+  @UseGuards(JwtAuthGuard)
   @Post('init')
-  async init(@Body() body: { wallet_pubkey: string }) {
-    if (!body?.wallet_pubkey || !body.wallet_pubkey.trim()) {
-      throw new BadRequestException('wallet_pubkey is required');
+  async init(
+    @Req() req: Request & { user?: any },
+    @Body() body: { redirect_url?: string },
+  ) {
+    const tokenWallet = (req.user?.wallet_pubkey || '').trim();
+    if (!tokenWallet) {
+      throw new UnauthorizedException('Invalid token payload (missing wallet_pubkey)');
     }
 
-    const wallet = body.wallet_pubkey.trim();
-    return this.onboardingService.initOnboarding(wallet);
+    const redirectUrl = body?.redirect_url?.trim() ? body.redirect_url.trim() : null;
+
+    return this.onboardingService.initOnboarding(tokenWallet, redirectUrl);
   }
 
   /**
    * GET /onboarding/mock-fc?sessionId=...
-   *
-   * Renvoie une page HTML sandbox simulant FranceConnect
-   * avec un formulaire jour / mois / année.
-   * Aucune donnée n’est stockée ici : tout part en query vers le callback.
+   * Renvoie une page HTML sandbox simulant FranceConnect.
    */
   @Get('mock-fc')
   @Header('Content-Type', 'text/html')
@@ -52,23 +62,24 @@ export class OnboardingController {
     }
 
     const sid = sessionId.trim();
-
-    // petite validation pour éviter des caractères exotiques dans l’HTML
     if (!/^[0-9a-zA-Z_-]+$/.test(sid)) {
       throw new BadRequestException('sessionId has an invalid format');
     }
 
-    // Page HTML simple simulant FranceConnect : formulaire jour/mois/année
     return `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
   <title>Mock FranceConnect - LegalProof</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
 </head>
 <body>
   <h1>Simulateur FranceConnect - Date de naissance (sandbox)</h1>
-  <p>Cette page est une simulation pour LegalProof. Les données ne sont utilisées que pour calculer un âge et ne sont pas renvoyées au frontend.</p>
+  <p>
+    Cette page est une simulation pour LegalProof.
+    La date de naissance sert uniquement à calculer "18+ / non" et n’est pas renvoyée au front.
+  </p>
   <form method="GET" action="/onboarding/mock-fc/callback">
     <input type="hidden" name="sessionId" value="${sid}" />
     <label>
@@ -85,7 +96,7 @@ export class OnboardingController {
       Année :
       <input type="number" name="year" min="1900" max="2100" required />
     </label>
-    <br />
+    <br /><br />
     <button type="submit">Valider</button>
   </form>
 </body>
@@ -96,8 +107,8 @@ export class OnboardingController {
   /**
    * GET /onboarding/mock-fc/callback
    *
-   * Reçoit sessionId + jour/mois/année depuis la page mock FC,
-   * appelle la logique métier (AgeProofService) et renvoie un JSON de résultat.
+   * Par défaut: si la session a un redirect_url => 302 vers le front.
+   * Pour tests curl: ajoute ?format=json pour forcer le JSON.
    */
   @Get('mock-fc/callback')
   async mockFcCallback(
@@ -105,41 +116,24 @@ export class OnboardingController {
     @Query('day') day?: string,
     @Query('month') month?: string,
     @Query('year') year?: string,
+    @Query('format') format?: string,
+    @Res({ passthrough: true }) res?: Response,
   ) {
     if (!sessionId || !day || !month || !year) {
-      throw new BadRequestException(
-        'sessionId, day, month et year sont requis',
-      );
+      throw new BadRequestException('sessionId, day, month et year sont requis');
     }
 
     const sid = sessionId.trim();
-    const dayStr = day.trim();
-    const monthStr = month.trim();
-    const yearStr = year.trim();
+    const dayNum = parseInt(day.trim(), 10);
+    const monthNum = parseInt(month.trim(), 10);
+    const yearNum = parseInt(year.trim(), 10);
 
-    const dayNum = parseInt(dayStr, 10);
-    const monthNum = parseInt(monthStr, 10);
-    const yearNum = parseInt(yearStr, 10);
-
-    if (
-      !Number.isInteger(dayNum) ||
-      !Number.isInteger(monthNum) ||
-      !Number.isInteger(yearNum)
-    ) {
-      throw new BadRequestException(
-        'day, month et year doivent être des entiers',
-      );
+    if (![dayNum, monthNum, yearNum].every(Number.isInteger)) {
+      throw new BadRequestException('day, month et year doivent être des entiers');
     }
-
-    if (dayNum < 1 || dayNum > 31) {
-      throw new BadRequestException('day doit être entre 1 et 31');
-    }
-    if (monthNum < 1 || monthNum > 12) {
-      throw new BadRequestException('month doit être entre 1 et 12');
-    }
-    if (yearNum < 1900 || yearNum > 2100) {
-      throw new BadRequestException('year doit être entre 1900 et 2100');
-    }
+    if (dayNum < 1 || dayNum > 31) throw new BadRequestException('day doit être entre 1 et 31');
+    if (monthNum < 1 || monthNum > 12) throw new BadRequestException('month doit être entre 1 et 12');
+    if (yearNum < 1900 || yearNum > 2100) throw new BadRequestException('year doit être entre 1900 et 2100');
 
     const result = await this.onboardingService.handleMockFcCallback({
       sessionId: sid,
@@ -148,7 +142,26 @@ export class OnboardingController {
       year: yearNum,
     });
 
-    // JSON de résultat (très pratique pour les tests / la démo)
+    const wantJson = (format || '').toLowerCase() === 'json';
+
+    if (!wantJson && result.redirectUrl) {
+      try {
+        const u = new URL(result.redirectUrl);
+
+        // On n’envoie pas la DOB au front. On envoie seulement un résultat.
+        u.searchParams.set('sessionId', result.sessionId);
+        u.searchParams.set('status', result.status);
+        u.searchParams.set('isMajor', String(result.isMajor));
+        u.searchParams.set('wallet_pubkey', result.walletPubkey);
+        u.searchParams.set('claimCreated', String(result.claimCreated));
+
+        res?.redirect(302, u.toString());
+        return;
+      } catch {
+        // redirect_url invalide => fallback JSON
+      }
+    }
+
     return result;
   }
 }
